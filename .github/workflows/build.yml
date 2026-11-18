@@ -38,12 +38,28 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          which sdkmanager || ls -d "${ANDROID_HOME}"/cmdline-tools/*/bin || true
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" || \
-            sdkmanager --install "platform-tools" "platforms;android-37" "build-tools;${ANDROID_BUILD_TOOLS}"
-          ls "${ANDROID_HOME}/platforms" "${ANDROID_HOME}/build-tools"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SM=$(ls -1 "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n1 || true)
+          if [ -z "$SM" ]; then
+            echo "== bootstrapping cmdline-tools"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL -o /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+            rm -rf /tmp/clt && mkdir -p /tmp/clt
+            unzip -q /tmp/clt.zip -d /tmp/clt
+            mv /tmp/clt/cmdline-tools "$SDK/cmdline-tools/latest"
+            SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "sdkmanager: $SM"
+          export ANDROID_HOME="$SDK"
+          export ANDROID_SDK_ROOT="$SDK"
+          yes | "$SM" --licenses > /dev/null || true
+          "$SM" --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" || \
+            "$SM" --install "platform-tools" "platforms;android-37" "build-tools;${ANDROID_BUILD_TOOLS}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/build-tools/${ANDROID_BUILD_TOOLS}" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          ls "$SDK/platforms" "$SDK/build-tools"
 
       - name: Build release APKs
         shell: bash
@@ -53,17 +69,17 @@ jobs:
           echo "ref: $(git describe --tags --always)"
           ./gradlew --no-daemon --stacktrace assembleRelease
 
-      - name: Sign with own key if needed
+      - name: Sign with own key
         shell: bash
         run: |
           set -eo pipefail
           BT="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
           mkdir -p out
+          keytool -genkeypair -v -keystore /tmp/ks.jks -alias sesame -keyalg RSA -keysize 2048 \
+            -validity 10000 -storepass sesame123 -keypass sesame123 -dname "CN=Sesame-AG Self Build" > /dev/null
           for f in app/build/outputs/apk/release/*.apk; do
             base="$(basename "$f" .apk)"
             "$BT/zipalign" -p -f 4 "$f" "/tmp/$base-aligned.apk"
-            keytool -genkeypair -v -keystore /tmp/ks.jks -alias sesame -keyalg RSA -keysize 2048 \
-              -validity 10000 -storepass sesame123 -keypass sesame123 -dname "CN=Sesame-AG Self Build" > /dev/null
             "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass pass:sesame123 --key-pass pass:sesame123 \
               --out "out/$base.apk" "/tmp/$base-aligned.apk"
           done
