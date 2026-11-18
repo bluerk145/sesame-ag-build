@@ -1,0 +1,82 @@
+name: Build Sesame-AG APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref / tag of Sesame-AG/Sesame-AG to build"
+        required: true
+        default: "4400-0.2.7"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CI: "true"
+      ANDROID_PLATFORM: "android-37.0"
+      ANDROID_BUILD_TOOLS: "37.0.0"
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: Sesame-AG/Sesame-AG
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        shell: bash
+        run: |
+          set -eo pipefail
+          sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Build release APKs
+        shell: bash
+        run: |
+          set -eo pipefail
+          chmod +x gradlew
+          echo "ref: $(git describe --tags --always)"
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Sign with own key if needed
+        shell: bash
+        run: |
+          set -eo pipefail
+          BT="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
+          mkdir -p out
+          for f in app/build/outputs/apk/release/*.apk; do
+            base="$(basename "$f" .apk)"
+            if "$BT/apksigner" verify "$f" > /dev/null 2>&1; then
+              cp "$f" "out/$base.apk"
+            else
+              keytool -genkeypair -v -keystore /tmp/ks.jks -alias sesame -keyalg RSA -keysize 2048 \
+                -validity 10000 -storepass sesame123 -keypass sesame123 -dname "CN=Sesame-AG Self Build" > /dev/null
+              "$BT/zipalign" -p -f 4 "$f" "/tmp/$base-aligned.apk"
+              "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass pass:sesame123 --key-pass pass:sesame123 \
+                --out "out/$base.apk" "/tmp/$base-aligned.apk"
+            fi
+          done
+          ls -l out/
+          "$BT/apksigner" verify --print-certs out/*.apk
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sesame-apks
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 7
