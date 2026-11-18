@@ -84,7 +84,7 @@ jobs:
               --out "out/$base.apk" "/tmp/$base-aligned.apk"
           done
           ls -l out/
-          "$BT/apksigner" verify --print-certs out/*.apk
+          for a in out/*.apk; do "$BT/apksigner" verify --print-certs "$a"; done
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
