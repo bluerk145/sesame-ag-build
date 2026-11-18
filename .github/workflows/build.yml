@@ -34,15 +34,16 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -eo pipefail
-          sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          which sdkmanager || ls -d "${ANDROID_HOME}"/cmdline-tools/*/bin || true
           yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" || \
+            sdkmanager --install "platform-tools" "platforms;android-37" "build-tools;${ANDROID_BUILD_TOOLS}"
+          ls "${ANDROID_HOME}/platforms" "${ANDROID_HOME}/build-tools"
 
       - name: Build release APKs
         shell: bash
@@ -60,15 +61,11 @@ jobs:
           mkdir -p out
           for f in app/build/outputs/apk/release/*.apk; do
             base="$(basename "$f" .apk)"
-            if "$BT/apksigner" verify "$f" > /dev/null 2>&1; then
-              cp "$f" "out/$base.apk"
-            else
-              keytool -genkeypair -v -keystore /tmp/ks.jks -alias sesame -keyalg RSA -keysize 2048 \
-                -validity 10000 -storepass sesame123 -keypass sesame123 -dname "CN=Sesame-AG Self Build" > /dev/null
-              "$BT/zipalign" -p -f 4 "$f" "/tmp/$base-aligned.apk"
-              "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass pass:sesame123 --key-pass pass:sesame123 \
-                --out "out/$base.apk" "/tmp/$base-aligned.apk"
-            fi
+            "$BT/zipalign" -p -f 4 "$f" "/tmp/$base-aligned.apk"
+            keytool -genkeypair -v -keystore /tmp/ks.jks -alias sesame -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass sesame123 -keypass sesame123 -dname "CN=Sesame-AG Self Build" > /dev/null
+            "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass pass:sesame123 --key-pass pass:sesame123 \
+              --out "out/$base.apk" "/tmp/$base-aligned.apk"
           done
           ls -l out/
           "$BT/apksigner" verify --print-certs out/*.apk
